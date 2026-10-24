@@ -1,0 +1,184 @@
+services:
+  # ==========================================
+  # 1. BASE DE DATOS Y CACHE COMPARTIDA
+  # ==========================================
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: chatbot_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-appuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-GeneraUnPasswordSeguroPostgres2026!}
+      POSTGRES_DB: evolution
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - chatbot_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: chatbot_redis
+    restart: always
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-GeneraUnPasswordSeguroRedis2026!}
+    volumes:
+      - ./data/redis:/data
+    networks:
+      - chatbot_network
+
+  # ==========================================
+  # 2. EVOLUTION GO (WHATSAPP GATEWAY - GOLANG / WHATSMEOW)
+  # ==========================================
+  evolution-api:
+    image: evoapicloud/evolution-go:latest
+    container_name: evolution_api
+    restart: always
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - SERVER_PORT=8080
+      - CLIENT_NAME=evolution
+      - GLOBAL_API_KEY=${EVOLUTION_API_KEY}
+      - POSTGRES_AUTH_DB=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/evogo_auth?sslmode=disable
+      - POSTGRES_USERS_DB=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/evogo_users?sslmode=disable
+      - DATABASE_SAVE_MESSAGES=false
+      - WADEBUG=INFO
+      - LOGTYPE=console
+      - LOG_DIRECTORY=/app/logs
+      - CONNECT_ON_STARTUP=true
+      - WEBHOOK_FILES=true
+      - OS_NAME=Linux
+      - EVOLUTION_OPERATOR_EMAIL=${OPERATOR_EMAIL:-soporte@tudominio.com}
+    volumes:
+      - ./data/evolution_go_data:/app/dbdata
+      - ./data/evolution_go_logs:/app/logs
+    networks:
+      - chatbot_network
+
+  # ==========================================
+  # 3. TYPEBOT (CONSTRUCTOR VISUAL & VIEWER)
+  # ==========================================
+  typebot-builder:
+    image: baptistearno/typebot-builder:latest
+    container_name: typebot_builder
+    restart: always
+    depends_on:
+      - postgres
+    environment:
+      - NEXTAUTH_URL=https://${DOMAIN_TYPEBOT_BUILDER}
+      - NEXT_PUBLIC_VIEWER_URL=https://${DOMAIN_TYPEBOT_VIEWER}
+      - ENCRYPTION_SECRET=${TYPEBOT_ENCRYPTION_SECRET}
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/typebot
+    networks:
+      - chatbot_network
+
+  typebot-viewer:
+    image: baptistearno/typebot-viewer:latest
+    container_name: typebot_viewer
+    restart: always
+    depends_on:
+      - postgres
+    environment:
+      - NEXTAUTH_URL=https://${DOMAIN_TYPEBOT_VIEWER}
+      - NEXT_PUBLIC_VIEWER_URL=https://${DOMAIN_TYPEBOT_VIEWER}
+      - ENCRYPTION_SECRET=${TYPEBOT_ENCRYPTION_SECRET}
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/typebot
+    networks:
+      - chatbot_network
+
+  # ==========================================
+  # 4. CHATWOOT (BANDEJA MULTICANAL & ATENCIÓN HUMANA)
+  # ==========================================
+  chatwoot-web:
+    image: chatwoot/chatwoot:latest
+    container_name: chatwoot_web
+    restart: always
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - RAILS_ENV=production
+      - NODE_ENV=production
+      - INSTALLATION_ENV=docker
+      - ENABLE_ACCOUNT_SIGNUP=true
+      - FRONTEND_URL=https://${DOMAIN_CHATWOOT}
+      - SECRET_KEY_BASE=${CHATWOOT_SECRET_KEY}
+      - POSTGRES_DATABASE=chatwoot
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USERNAME=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/2
+    entrypoint: docker/entrypoints/rails.sh
+    command: ['bundle', 'exec', 'rails', 's', '-p', '3000', '-b', '0.0.0.0']
+    networks:
+      - chatbot_network
+
+  chatwoot-worker:
+    image: chatwoot/chatwoot:latest
+    container_name: chatwoot_worker
+    restart: always
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - RAILS_ENV=production
+      - NODE_ENV=production
+      - INSTALLATION_ENV=docker
+      - ENABLE_ACCOUNT_SIGNUP=true
+      - FRONTEND_URL=https://${DOMAIN_CHATWOOT}
+      - SECRET_KEY_BASE=${CHATWOOT_SECRET_KEY}
+      - POSTGRES_DATABASE=chatwoot
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USERNAME=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/2
+    command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
+    networks:
+      - chatbot_network
+
+  # ==========================================
+  # 5. REVERSE PROXY CON SSL AUTOMATICO (LETSENCRYPT)
+  # ==========================================
+  nginx-proxy-manager:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: npm_proxy
+    restart: always
+    ports:
+      - "80:80"      # HTTP
+      - "443:443"    # HTTPS SSL
+      - "81:81"      # Panel Web NPM (Admin)
+    volumes:
+      - ./data/npm:/data
+      - ./data/npm_letsencrypt:/etc/letsencrypt
+    networks:
+      - chatbot_network
+
+  # ==========================================
+  # 6. WHATSAPP AI BOT (FASTAPI + NVIDIA NIM / MINIMAX / DEEPSEEK)
+  # ==========================================
+  intempo-bot:
+    build: ./bot
+    container_name: intempo_bot
+    restart: always
+    depends_on:
+      - evolution-api
+      - chatwoot-web
+    environment:
+      - PORT=5000
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+      - NVIDIA_BASE_URL=${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      - NVIDIA_PRIMARY_MODEL=${NVIDIA_PRIMARY_MODEL:-minimaxai/minimax-m3.1-flash}
+      - NVIDIA_FALLBACK_MODEL_1=${NVIDIA_FALLBACK_MODEL_1:-deepseek-ai/deepseek-v4.1-flash}
+      - NVIDIA_FALLBACK_MODEL_2=${NVIDIA_FALLBACK_MODEL_2:-nvidia/nemotron-3.5-lightning-30b-a3b}
+      - EVOLUTION_API_URL=http://evolution_api:8080
+      - EVOLUTION_INSTANCE_TOKEN=${EVOLUTION_INSTANCE_TOKEN}
+      - CHATWOOT_URL=http://chatwoot_web:3000
+      - CHATWOOT_API_TOKEN=${CHATWOOT_API_TOKEN}
+      - CHATWOOT_ACCOUNT_ID=${CHATWOOT_ACCOUNT_ID:-1}
+      - CHATWOOT_INBOX_ID=${CHATWOOT_INBOX_ID:-1}
+    networks:
+      - chatbot_network
+
+networks:
+  chatbot_network:
+    external: true
